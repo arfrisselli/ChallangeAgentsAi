@@ -1,17 +1,19 @@
 """
-Web search tool: SerpAPI, Tavily, or Google CSE (LangChain wrapper).
-Invoked by the model when the user asks about current/factual web information.
-Returns consolidated natural language text + list of source links.
+Web search tool using Tavily API directly (not LangChain wrapper).
+Uses include_answer=True for pre-synthesized answers without needing LLM.
 """
+import logging
 import os
 import re
 from typing import Optional
 
 from langchain_core.tools import tool
-from langchain_community.tools.tavily_search import TavilySearchResults
 from pydantic import BaseModel, Field
+from tavily import TavilyClient
 
 from tools.base import WebSearchResult
+
+logger = logging.getLogger(__name__)
 
 _NOISE_PATTERNS = re.compile(
     r"(?i)"
@@ -24,28 +26,43 @@ _NOISE_PATTERNS = re.compile(
     r"todos os direitos|all rights reserved|"
     r"portal da prefeitura|menu\s+oculto|gabinete do prefeito|"
     r"n[uú]cleo de comunica[cç][aã]o|hor[aá]rios?\s+de\s+funcionamento|"
-    r"lista de respons[aá]veis|acesso [àa] informa[cç][aã]o)"
+    r"lista de respons[aá]veis|acesso [àa] informa[cç][aã]o|"
+    r"ative o javascript|enable javascript|download on the app\s*store|"
+    r"google play|app store|escolha a cor|escolha o tamanho|"
+    r"c[oó]digo fornecido|iframe|embed\s+code|"
+    r"\d{2,4}x\d{2,4}\b|"
+    r"voltar ao topo|back to top|leia mais|read more|saiba mais|"
+    r"clique aqui|click here|menu principal|main menu|"
+    r"logotipo|banner|slider|carousel|"
+    r"rel[oó]gio online|hora exata|fuso hor[aá]rio|timezone|"
+    r"inscreva.se|subscribe|newsletter|"
+    r"compartilh[ae]|share this|tweet this)"
 )
 
 
-def _clean_web_content(text: str, max_chars: int = 1500) -> str:
-    """Strip noise from scraped web pages: menus, footers, contacts, markdown headers, etc."""
+def _clean_web_content(text: str, max_chars: int = 1000) -> str:
+    """Aggressively strip noise from scraped web pages."""
     if not text:
         return ""
     text = re.sub(r"#{1,6}\s*", "", text)
     text = re.sub(r"^\d+\.\s+", "", text, flags=re.MULTILINE)
     text = re.sub(r"\*{1,2}([^*]+)\*{1,2}", r"\1", text)
+    text = re.sub(r"\[\.{2,3}\]", "", text)
+    text = re.sub(r"https?://\S+", "", text)
+    text = re.sub(r"\\[nrt]", " ", text)
 
     lines = text.split("\n")
     kept = []
     seen = set()
     for line in lines:
         stripped = line.strip()
-        if len(stripped) < 25:
+        if len(stripped) < 30:
             continue
         if _NOISE_PATTERNS.search(stripped):
             continue
         if stripped.count("|") > 2:
+            continue
+        if stripped.count("—") > 2:
             continue
         norm = stripped.lower()[:60]
         if norm in seen:
@@ -64,53 +81,59 @@ class WebSearchInput(BaseModel):
     query: str = Field(description="Search query or question to look up on the web")
 
 
-def _get_tavily_tool():
-    """Build Tavily tool if API key is set."""
+def _run_web_search(query: str) -> WebSearchResult:
+    """
+    Search via Tavily API directly. Uses include_answer=True to get
+    a pre-synthesized answer that works without LLM.
+    """
     api_key = os.getenv("TAVILY_API_KEY")
     if not api_key:
-        return None
-    return TavilySearchResults(
-        max_results=5,
-        search_depth="advanced",
-        include_answer=True,
-        api_key=api_key,
-    )
-
-
-def _run_web_search(query: str) -> WebSearchResult:
-    t = _get_tavily_tool()
-    if not t:
         return WebSearchResult(
             summary="Web search is not configured. Set TAVILY_API_KEY in .env.",
             links=[],
         )
+
     try:
-        results = t.invoke({"query": query})
-        if isinstance(results, list):
-            summaries = [
-                _clean_web_content(r.get("content", r.get("snippet", str(r))))
-                for r in results
-            ]
-            summaries = [s for s in summaries if s]
-            links = [r.get("url", "") for r in results if r.get("url")]
+        client = TavilyClient(api_key=api_key)
+        response = client.search(
+            query=query,
+            max_results=5,
+            search_depth="advanced",
+            include_answer=True,
+        )
+
+        tavily_answer = (response.get("answer") or "").strip()
+        results_list = response.get("results") or []
+        links = [r.get("url", "") for r in results_list if r.get("url")][:5]
+
+        if tavily_answer:
             return WebSearchResult(
-                summary="\n".join(summaries) if summaries else "No results found.",
-                links=links[:10],
+                summary=tavily_answer,
+                links=links,
+                answer=tavily_answer,
             )
-        if isinstance(results, dict) and "answer" in results:
-            res_list = results.get("results") or []
-            links = [r.get("url", "") for r in res_list if isinstance(r, dict) and r.get("url")][:10]
-            return WebSearchResult(summary=results.get("answer", ""), links=links)
-        return WebSearchResult(summary=str(results), links=[])
+
+        summaries = [
+            _clean_web_content(r.get("content", ""))
+            for r in results_list
+        ]
+        summaries = [s for s in summaries if s]
+
+        return WebSearchResult(
+            summary="\n".join(summaries) if summaries else "Nenhum resultado encontrado.",
+            links=links,
+        )
+
     except Exception as e:
+        logger.error("web_search_error: %s", str(e)[:200])
         msg = str(e).lower()
         if "rate" in msg or "limit" in msg:
             return WebSearchResult(
-                summary="Rate limit reached for web search. Please try again later.",
+                summary="Limite de requisições atingido. Tente novamente em alguns instantes.",
                 links=[],
             )
         return WebSearchResult(
-            summary=f"Search failed: {e}. Please try again or rephrase.",
+            summary=f"Erro na busca: {str(e)[:100]}. Tente reformular a pergunta.",
             links=[],
         )
 
@@ -122,9 +145,12 @@ def web_search(query: str) -> str:
     facts not in the knowledge base, or general web search. Returns information with source URLs.
     """
     result = _run_web_search(query)
-    parts = [result.summary]
+    if result.answer:
+        parts = [result.answer]
+    else:
+        parts = [result.summary]
     if result.links:
-        parts.append("\n\n**Sources:**")
+        parts.append("\n\nFontes:")
         for i, link in enumerate(result.links[:3], 1):
             parts.append(f"[{i}] {link}")
     return "\n".join(parts)

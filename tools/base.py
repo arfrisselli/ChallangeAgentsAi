@@ -9,6 +9,7 @@ class WebSearchResult:
     """Consolidated web search result: natural language summary + source links."""
     summary: str
     links: list[str]
+    answer: Optional[str] = None
 
 
 @dataclass

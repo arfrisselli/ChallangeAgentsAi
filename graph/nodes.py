@@ -103,8 +103,8 @@ def planner_node(state: GraphState) -> dict[str, Any]:
 
 def fallback_search_node(state: GraphState) -> dict[str, Any]:
     """
-    FallbackSearchNode: Used when Planner chose web fallback. Calls only web_search and returns
-    consolidated answer. No other tools. Prevents hallucination when context is insufficient.
+    FallbackSearchNode: Web search with Tavily answer (pre-synthesized) as primary path.
+    Falls back to LLM synthesis, then to honest message if both fail.
     """
     from tools.web_search import _run_web_search
     messages = state.get("messages") or []
@@ -112,59 +112,48 @@ def fallback_search_node(state: GraphState) -> dict[str, Any]:
     query = (getattr(last, "content", None) or "").strip() if last else ""
     if not query:
         return {"messages": [AIMessage(content="Não recebi uma pergunta. Por favor, pergunte algo.")]}
-    
+
     start = time.perf_counter()
     result = _run_web_search(query)
     duration = time.perf_counter() - start
-    log.info("fallback_search_node", tool="web_search", duration_sec=round(duration, 3))
-    
-    # Synthesize the web search results using LLM (Perplexity-style)
-    llm = _get_llm()
-    
-    clean_summary = result.summary[:1500]
+    log.info("fallback_search_node", tool="web_search", duration_sec=round(duration, 3),
+             has_tavily_answer=bool(result.answer))
 
-    synthesis_prompt = f"""Com base nos resultados de pesquisa web abaixo, forneça uma resposta concisa e direta à pergunta do usuário em 2-4 frases.
+    context = result.answer if result.answer else result.summary[:1000]
 
-REGRA OBRIGATÓRIA: Responda SEMPRE em português brasileiro (PT-BR), independentemente do idioma da pergunta.
+    synthesis_prompt = f"""Com base nas informações abaixo, forneça uma resposta concisa e direta à pergunta do usuário em 2-4 frases.
+
+REGRA OBRIGATÓRIA: Responda SEMPRE em português brasileiro (PT-BR), independentemente do idioma da pergunta ou das informações fornecidas. Traduza tudo para PT-BR.
 
 Pergunta do usuário: {query}
 
-Resultados da pesquisa web:
-{clean_summary}
+Informações encontradas:
+{context}
 
 Instruções:
-- Sintetize apenas as informações CHAVE, ignore formatação/HTML/menus/rodapés
+- Sintetize apenas as informações CHAVE
 - Seja conciso e natural (2-4 frases no máximo)
-- RESPONDA SEMPRE EM PORTUGUÊS BRASILEIRO
+- RESPONDA SEMPRE EM PORTUGUÊS BRASILEIRO, traduzindo se necessário
 - Cite fontes como [1], [2] se usar múltiplas
-- Termine com "Fontes:" e liste até 3 URLs
 
 Resposta (em PT-BR):"""
 
     try:
+        llm = _get_llm()
         synthesis = llm.invoke([HumanMessage(content=synthesis_prompt)])
         answer = synthesis.content or "Não foi possível sintetizar os resultados."
     except Exception as e:
         log.error("fallback_search_synthesis_error", error=str(e), query=query[:100])
-        import re as _re
-        sentences = _re.split(r'(?<=[.!?])\s+', clean_summary)
-        useful = [
-            s.strip() for s in sentences
-            if len(s.strip()) > 40
-            and not s.strip().startswith(("Portal", "Menu", "Perfil do", "Foto "))
-        ]
-        brief = " ".join(useful[:3])
-        if not brief:
-            brief = clean_summary[:300]
-        answer = f"Com base na pesquisa: {brief}"
-        if not answer.rstrip().endswith((".", "!", "?")):
-            answer += "."
-        if result.links:
-            answer += "\n\nFontes:\n" + "\n".join(f"[{i+1}] {link}" for i, link in enumerate(result.links[:3]))
+        if result.answer:
+            answer = result.answer
+        else:
+            answer = ("Desculpe, não consegui gerar uma resposta sintetizada no momento. "
+                      "Tente novamente ou reformule sua pergunta.")
 
     if result.links and "[" not in answer:
-        answer += "\n\nFontes:\n" + "\n".join(f"[{i+1}] {link}" for i, link in enumerate(result.links[:3]))
-    
+        answer += "\n\nFontes:\n" + "\n".join(
+            f"[{i+1}] {link}" for i, link in enumerate(result.links[:3]))
+
     return {"messages": [AIMessage(content=answer)]}
 
 

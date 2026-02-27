@@ -23,10 +23,12 @@ AI_IDENTITY = {
 CONVERSATION_PATTERNS = {
     # Identity questions (PT)
     "name_pt": [
-        r"\b(qual|quais?)\s+(é|eh|e)\s+o\s+seu\s+nome\b",
+        r"\bqual\s+(é|eh|e)?\s*o\s+seu\s+nome\b",
         r"\bcomo\s+(você|vc|voce)\s+se\s+chama\b",
         r"\bqual\s+seu\s+nome\b",
         r"\b(me\s+)?diz\s+seu\s+nome\b",
+        r"\bseu\s+nome\s+(é|eh)\s+o?\s*qu[eê]\b",
+        r"\bquem\s+(é|eh)\s+(você|vc|voce)\b",
     ],
     # Identity questions (EN)
     "name_en": [

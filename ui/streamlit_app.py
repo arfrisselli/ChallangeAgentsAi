@@ -86,10 +86,35 @@ if prompt := st.chat_input("Digite sua pergunta (busca web, docs, SQL, tempo)...
         {"role": "assistant", "content": full_response})
 
 with st.sidebar:
-    st.header("Info")
+    st.header("Atlas - Assistente IA")
     st.caption(
-        "O modelo escolhe quando usar: busca web, documentos, SQL ou previsão do tempo.")
-    if st.button("Limpar histórico"):
-        st.session_state.messages = []
-        st.session_state.conversation_id = None
-        st.rerun()
+        "O modelo escolhe automaticamente a melhor ferramenta: "
+        "busca web, documentos, banco de dados ou previsão do tempo.")
+
+    st.divider()
+
+    pairs = []
+    msgs = st.session_state.messages
+    for i, m in enumerate(msgs):
+        if m["role"] == "user":
+            answer = msgs[i + 1]["content"] if i + 1 < len(msgs) and msgs[i + 1]["role"] == "assistant" else None
+            pairs.append({"question": m["content"], "answer": answer})
+
+    if pairs:
+        st.subheader(f"Histórico ({len(pairs)})")
+        for i, pair in enumerate(pairs):
+            preview = pair["question"][:45] + ("..." if len(pair["question"]) > 45 else "")
+            with st.expander(f"{i + 1}. {preview}"):
+                st.markdown(f"**Pergunta:** {pair['question']}")
+                if pair["answer"]:
+                    st.markdown("---")
+                    st.markdown(pair["answer"])
+                else:
+                    st.caption("Aguardando resposta...")
+        st.divider()
+        if st.button("Limpar histórico"):
+            st.session_state.messages = []
+            st.session_state.conversation_id = None
+            st.rerun()
+    else:
+        st.info("Nenhuma conversa ainda. Faça uma pergunta para começar.")
