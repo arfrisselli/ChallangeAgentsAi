@@ -1,0 +1,62 @@
+@startuml
+!theme plain
+title ChallangeAgentsAi - Componentes e fluxo (4 rotas)
+
+actor User
+participant "Streamlit\n(UI)" as UI
+participant "FastAPI\n(Backend)" as API
+participant "LangGraph" as Graph
+participant "PlannerNode" as Planner
+participant "ConversationNode\n(sem LLM)" as Conv
+participant "WeatherNode\n(sem LLM)" as Weather
+participant "FallbackSearchNode" as Fallback
+participant "ExecutorNode\n(ReAct)" as Exec
+participant "MemoryNode" as Memory
+database "Postgres" as PG
+database "Chroma" as Chroma
+participant "OpenWeather" as OW
+participant "Tavily" as Tavily
+
+User -> UI: Mensagem
+UI -> API: POST /chat ou /chat/stream
+API -> Graph: stream(initial)
+
+Graph -> Planner: state
+Planner -> Planner: Classifica (regex + LLM)
+
+alt Conversação (saudação, identidade)
+  Planner -> Conv: is_conversational=True
+  Conv -> Conv: Responde como "Atlas"\n(resposta fixa, sem LLM)
+  Conv -> Memory: messages
+else Clima (keywords detectadas)
+  Planner -> Weather: is_weather_query=True
+  Weather -> Weather: Extrai cidade (regex)
+  Weather -> OW: HTTP (OpenWeatherMap API)
+  OW --> Weather: JSON (temp, desc, etc.)
+  Weather -> Weather: Formata resposta\n(sem LLM)
+  Weather -> Memory: messages
+else Web Fallback (conhecimento geral)
+  Planner -> Fallback: need_web_fallback=True
+  Fallback -> Tavily: web_search
+  Tavily --> Fallback: resultados
+  Fallback -> Fallback: Sintetiza com LLM
+  Fallback -> Memory: messages
+else Execução completa (docs, SQL, etc.)
+  Planner -> Exec: default
+  Exec -> Chroma: search_docs
+  Exec -> PG: sql_db (SELECT)
+  Exec -> OW: weather_api
+  Exec -> Tavily: web_search
+  Chroma --> Exec
+  PG --> Exec
+  OW --> Exec
+  Tavily --> Exec
+  Exec -> Memory: messages
+end
+
+Memory -> Graph: state atualizado
+Graph --> API: state final
+API --> UI: NDJSON stream ou JSON
+UI --> User: Resposta (streaming)
+
+@enduml
