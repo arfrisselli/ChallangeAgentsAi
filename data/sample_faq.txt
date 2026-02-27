@@ -1,0 +1,10 @@
+Challenge Agents AI - FAQ
+
+P: O que é este projeto?
+R: Um mini assistente conversacional (baseado em RAG) que usa LangChain e LangGraph para orquestrar múltiplas ferramentas: busca na web, base de conhecimento vetorial, PostgreSQL e previsão do tempo.
+
+P: Como executo o projeto?
+R: Copie o arquivo .env.example para .env, configure suas chaves de API e execute: docker compose up --build. A interface do usuário está disponível em http://localhost:8501.
+
+P: Quais ferramentas estão disponíveis?
+R: Busca na web (Tavily), busca de documentos (Chroma), SQL (PostgreSQL somente leitura) e previsão do tempo (OpenWeatherMap). O modelo decide quando chamar cada ferramenta com base na sua mensagem.
